@@ -309,30 +309,6 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
       return null;
     };
 
-    // Helpers portados do código oficial do Typebot
-    const trimTextTo20Chars = (text: string, existingTitles: string[] = []): string => {
-      const baseTitle = text.length > 20 ? `${text.slice(0, 18)}..` : text;
-      if (!existingTitles.includes(baseTitle)) return baseTitle;
-      let counter = 1;
-      let uniqueTitle = '';
-      do {
-        const suffix = `(${counter})`;
-        const availableChars = 20 - suffix.length - 3;
-        uniqueTitle = `${text.slice(0, availableChars)} ${suffix}..`;
-        counter++;
-      } while (existingTitles.includes(uniqueTitle));
-      return uniqueTitle;
-    };
-
-    const getUniqueButtonTitles = (texts: string[]): string[] => {
-      const uniqueTitles: string[] = [];
-      return texts.map((text) => {
-        const uniqueTitle = trimTextTo20Chars(text, uniqueTitles);
-        uniqueTitles.push(uniqueTitle);
-        return uniqueTitle;
-      });
-    };
-
     // Helper para formatar uma mensagem de texto do Typebot
     const formatTextMessage = (message: any): string => {
       let formattedText = '';
@@ -353,8 +329,14 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
     // para usá-la como body do botão (evita duplicação)
     let lastFormattedText = '';
     let interceptIndex = -1;
+    let choiceTextMessages: string[] = [];
 
-    if (input?.type === 'choice input') {
+    const selectableInputTypes = ['choice input', 'picture choice', 'cards', 'rating'];
+
+    if (selectableInputTypes.includes(input?.type)) {
+      choiceTextMessages = messages
+        .filter((message) => message.type === 'text')
+        .map((message) => formatTextMessage(message));
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].type === 'text') {
           interceptIndex = i;
@@ -370,7 +352,7 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
 
       const message = messages[msgIdx];
 
-      if (message.type === 'text') {
+      if (message.type === 'text' && !selectableInputTypes.includes(input?.type)) {
         const formattedText = formatTextMessage(message);
 
         if (formattedText.includes('[list]')) {
@@ -435,39 +417,51 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
       }
     }
 
-    // Process input choices — grupos de 3 botões (padrão oficial Typebot)
+    // Process single-choice inputs as native WhatsApp interactive lists.
     if (input) {
-      if (input.type === 'choice input') {
-        const validItems = (input.items as any[]).filter((item) => item.content);
+      if (selectableInputTypes.includes(input.type)) {
+        const sourceItems = Array.isArray(input.items)
+          ? input.items
+          : Array.isArray(input.options)
+            ? input.options
+            : [];
+        const validItems = sourceItems.filter((item) => item.content || item.title || item.label);
 
-        // Agrupa em batches de 3 (limite da API do WhatsApp para botões reply)
+        // A Meta permite até 10 rows por mensagem de lista.
         const groups: any[][] = [];
-        for (let i = 0; i < validItems.length; i += 3) {
-          groups.push(validItems.slice(i, i + 3));
+        for (let i = 0; i < validItems.length; i += 10) {
+          groups.push(validItems.slice(i, i + 10));
         }
 
         for (let idx = 0; idx < groups.length; idx++) {
           const group = groups[idx];
-          const bodyText = idx === 0 ? lastFormattedText || '―' : '―';
-          const titles = getUniqueButtonTitles(group.map((item) => item.content as string));
-
-          const buttonJson = {
+          const listTitle =
+            idx === 0
+              ? (choiceTextMessages[1] || 'Escolha uma opção:').replace(/\s+/g, ' ').trim().slice(0, 60)
+              : 'Mais opções';
+          const listJson = {
             number: session.remoteJid,
-            title: bodyText,
-            description: '\u200B',
-            footer: '',
-            buttons: group.map((item, index) => ({
-              type: 'reply',
-              displayText: titles[index],
-              id: item.value || item.id || `btn_${idx * 3 + index}`,
-            })),
+            title: listTitle,
+            description: idx === 0 ? choiceTextMessages[0] || 'Selecione uma opção:' : 'Selecione mais opções:',
+            buttonText: listTitle,
+            footerText: '',
+            sections: [
+              {
+                title: '',
+                rows: group.map((item, itemIndex) => ({
+                  title: String(item.content || item.title || item.label).slice(0, 24),
+                  description: String(item.description || '').slice(0, 72),
+                  rowId: item.value || item.id || `option_${idx * 10 + itemIndex}`,
+                })),
+              },
+            ],
           };
 
           try {
-            await instance.buttonMessage(buttonJson);
+            await instance.listMessage(listJson);
           } catch (err) {
-            this.logger.warn(`[TypebotService] buttonMessage falhou no grupo ${idx + 1}, usando fallback em texto`);
-            const fallbackText = group.map((item) => `▶️ ${item.content}`).join('\n');
+            this.logger.warn(`[TypebotService] listMessage failed for group ${idx + 1}; using text fallback`);
+            const fallbackText = group.map((item) => `• ${item.content}`).join('\n');
             await this.sendMessageWhatsApp(instance, session.remoteJid, fallbackText, settings, true);
           }
         }
@@ -708,13 +702,13 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
           prefilledVariables: {
             ...prefilledVariables,
             userMessage: content || '',
-            ctwa_clid: (msg as any)?.adReferral?.ctwaClid ?? '',
-            ad_source_id: (msg as any)?.adReferral?.sourceId ?? '',
-            ad_source_url: (msg as any)?.adReferral?.sourceUrl ?? '',
-            ad_headline: (msg as any)?.adReferral?.headline ?? '',
-            ad_body: (msg as any)?.adReferral?.body ?? '',
-            ad_media_type: (msg as any)?.adReferral?.mediaType ?? '',
-            ad_image_url: (msg as any)?.adReferral?.imageUrl ?? '',
+            ctwa_clid: msg.adReferral?.ctwaClid ?? '',
+            ad_source_id: msg.adReferral?.sourceId ?? '',
+            ad_source_url: msg.adReferral?.sourceUrl ?? '',
+            ad_headline: msg.adReferral?.headline ?? '',
+            ad_body: msg.adReferral?.body ?? '',
+            ad_media_type: msg.adReferral?.mediaType ?? '',
+            ad_image_url: msg.adReferral?.imageUrl ?? '',
           },
         });
 
