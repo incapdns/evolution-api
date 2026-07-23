@@ -2,7 +2,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { Events } from '@api/types/wa.types';
 import { Auth, ConfigService, HttpServer, Typebot } from '@config/env.config';
-import { Instance, IntegrationSession, Message, Typebot as TypebotModel } from '@prisma/client';
+import { Instance, IntegrationSession, Message, Prisma, Typebot as TypebotModel } from '@prisma/client';
 import { getConversationMessage } from '@utils/getConversationMessage';
 import { sendTelemetry } from '@utils/sendTelemetry';
 import axios from 'axios';
@@ -327,7 +327,6 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
 
     // Pré-escaneia: se houver choice input, intercepta a última mensagem de texto
     // para usá-la como body do botão (evita duplicação)
-    let lastFormattedText = '';
     let interceptIndex = -1;
     let choiceTextMessages: string[] = [];
 
@@ -340,7 +339,6 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].type === 'text') {
           interceptIndex = i;
-          lastFormattedText = formatTextMessage(messages[i]);
           break;
         }
       }
@@ -460,7 +458,9 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
           try {
             await instance.listMessage(listJson);
           } catch (err) {
-            this.logger.warn(`[TypebotService] listMessage failed for group ${idx + 1}; using text fallback`);
+            this.logger.warn(
+              `[TypebotService] listMessage failed for group ${idx + 1}; using text fallback. Error: ${err}`,
+            );
             const fallbackText = group.map((item) => `• ${item.content}`).join('\n');
             await this.sendMessageWhatsApp(instance, session.remoteJid, fallbackText, settings, true);
           }
@@ -702,13 +702,13 @@ export class TypebotService extends BaseChatbotService<TypebotModel, any> {
           prefilledVariables: {
             ...prefilledVariables,
             userMessage: content || '',
-            ctwa_clid: msg.adReferral?.ctwaClid ?? '',
-            ad_source_id: msg.adReferral?.sourceId ?? '',
-            ad_source_url: msg.adReferral?.sourceUrl ?? '',
-            ad_headline: msg.adReferral?.headline ?? '',
-            ad_body: msg.adReferral?.body ?? '',
-            ad_media_type: msg.adReferral?.mediaType ?? '',
-            ad_image_url: msg.adReferral?.imageUrl ?? '',
+            ctwa_clid: (msg.adReferral as Prisma.JsonObject)?.ctwaClid ?? '',
+            ad_source_id: (msg.adReferral as Prisma.JsonObject)?.sourceId ?? '',
+            ad_source_url: (msg.adReferral as Prisma.JsonObject)?.sourceUrl ?? '',
+            ad_headline: (msg.adReferral as Prisma.JsonObject)?.headline ?? '',
+            ad_body: (msg.adReferral as Prisma.JsonObject)?.body ?? '',
+            ad_media_type: (msg.adReferral as Prisma.JsonObject)?.mediaType ?? '',
+            ad_image_url: (msg.adReferral as Prisma.JsonObject)?.imageUrl ?? '',
           },
         });
 
